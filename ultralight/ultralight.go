@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/ebfe/scard"
+	"github.com/oo-developer/acr122u/hardware"
 )
 
 // Ultralight C command codes
@@ -47,16 +48,18 @@ const (
 type UltralightC struct {
 	card          *scard.Card
 	ctx           *scard.Context
+	reader        string
 	authenticated bool
 	key           []byte
 	uid           []byte
 }
 
 // NewUltralightC creates a new Ultralight C card instance
-func NewUltralightC(card *scard.Card, ctx *scard.Context) *UltralightC {
+func NewUltralightC(reader *hardware.Reader) *UltralightC {
 	return &UltralightC{
-		card:          card,
-		ctx:           ctx,
+		card:          reader.Card(),
+		ctx:           reader.Ctx(),
+		reader:        reader.Reader(),
 		authenticated: false,
 	}
 }

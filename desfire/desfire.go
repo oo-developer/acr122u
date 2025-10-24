@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"github.com/ebfe/scard"
+	"github.com/oo-developer/acr122u/hardware"
 )
 
 // DESFire card command codes
@@ -101,6 +102,7 @@ const (
 type DESFire struct {
 	card    *scard.Card
 	ctx     *scard.Context
+	reader  string
 	session *SessionKey
 }
 
@@ -115,10 +117,11 @@ type SessionKey struct {
 }
 
 // NewDESFire creates a new DESFire card instance
-func NewDESFire(card *scard.Card, ctx *scard.Context) *DESFire {
+func NewDESFire(reader *hardware.Reader) *DESFire {
 	return &DESFire{
-		card: card,
-		ctx:  ctx,
+		card:   reader.Card(),
+		ctx:    reader.Ctx(),
+		reader: reader.Reader(),
 	}
 }
 
