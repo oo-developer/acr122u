@@ -59,7 +59,7 @@ func main() {
 	}
 	fmt.Printf("[OK] Card UID: %s\n", hex.EncodeToString(uid))
 
-	cardType, err := reader.DetectCardType()
+	cardType, err := reader.ReadCardInfo()
 	if err != nil {
 		log.Printf("[ERROR] Failed to get card type: %v\n", err)
 		os.Exit(1)
@@ -69,9 +69,9 @@ func main() {
 	classicReader := classic.NewClassic(reader)
 
 	blockNum := byte(4)
-
-	key := classicReader.TryStandardKeys(blockNum)
+	key := classicReader.TryStandardKeys(blockNum, classic.KeyTypeA)
 	fmt.Printf("[OK] Default key found: %s\n", key)
+	fmt.Printf("[OK] Key: %s\n", hex.EncodeToString(classic.DefaultKeys[key].KeyA))
 
 	// Default MIFARE Classic key (all 0xFF)
 	defaultKey := []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}

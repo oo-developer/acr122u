@@ -1,11 +1,25 @@
 package hardware
 
 import (
+	"bytes"
+	"encoding/hex"
 	"fmt"
 	"time"
 
 	"github.com/ebfe/scard"
-	"github.com/oo-developer/acr122u/database"
+)
+
+const (
+	MIFARE_CLASSIK_1K = "MIFARE Classic 1K"
+	MIFARE_CLASSIK_4K = "MIFARE Classic 4K"
+	MIFARE_MINI       = "MIFARE Mini"
+	MIFARE_ULTRALIGHT = "MIFARE Ultralight/NTAG203/213"
+	NTAG              = "NTAG215/216"
+	MIFARE_DESFIRE    = "MIFARE DESFire EV1/EV2/EV3"
+	MIFARE_PLUS_SE_2K = "MIFARE Plus SE 2K"
+	MIFARE_PLUS_SE_4K = "MIFARE Plus SE 4K"
+	TOPAZ_JEWEL       = "Topaz/Jewel"
+	FELI_CA           = "FeliCa"
 )
 
 type CardInfo struct {
@@ -38,16 +52,16 @@ func NewReader() (*Reader, error) {
 	}, nil
 }
 
-func (r *Reader) Ctx() *scard.Context {
-	return r.ctx
+func (m *Reader) Ctx() *scard.Context {
+	return m.ctx
 }
 
-func (r *Reader) Card() *scard.Card {
-	return r.card
+func (m *Reader) Card() *scard.Card {
+	return m.card
 }
 
-func (r *Reader) Reader() string {
-	return r.reader
+func (m *Reader) Reader() string {
+	return m.reader
 }
 
 // Close releases the hardware resources
@@ -129,12 +143,15 @@ func (m *Reader) GetUID() ([]byte, error) {
 	return rsp[:len(rsp)-2], nil
 }
 
-func (m *Reader) DetectCardType() (*CardInfo, error) {
+func (m *Reader) ReadCardInfo() (*CardInfo, error) {
 	if m.card == nil {
 		return nil, fmt.Errorf("not connected to card")
 	}
 
-	sak, atqa := m.getCardAttributes()
+	sak, atqa, sizeInBytes, err := m.getCardAttributes()
+	if err != nil {
+		return nil, err
+	}
 
 	status, err := m.card.Status()
 	if err != nil {
@@ -149,9 +166,7 @@ func (m *Reader) DetectCardType() (*CardInfo, error) {
 	default:
 		protocol = "Unknown"
 	}
-	db := database.NewCardDatabase()
-	db.LoadWithProbe()
-	cardName := db.Detect(status.Atr)
+	cardType, err := m.getCardType(atqa, sak, sizeInBytes)
 
 	uid, err := m.GetUID()
 	if err != nil {
@@ -159,37 +174,178 @@ func (m *Reader) DetectCardType() (*CardInfo, error) {
 	}
 	info := &CardInfo{
 		UID:      uid,
-		Type:     cardName,
+		Type:     cardType,
 		ATR:      status.Atr,
 		SAK:      sak,
 		ATQA:     atqa,
 		Protocol: protocol,
+		Capacity: sizeInBytes,
 	}
-	info.UID = uid
-
 	return info, nil
 }
 
-func (m *Reader) getCardAttributes() (sak byte, atqa []byte) {
-	// This is a simplified version - actual implementation may vary by hardware
-	// Some readers expose this in ATR, others need special commands
-
-	// Try to extract from ATR historical bytes if available
-	status, err := m.card.Status()
+func (m *Reader) getCardAttributes() (sak byte, atqa []byte, sizeInBytes int, err error) {
+	if ok, size := m.tryClassic(); ok {
+		sizeInBytes = size
+		if size == 1024 {
+			sak = 0x08
+			atqa = []byte{0x00, 0x04}
+		} else {
+			sak = 0x18
+			atqa = []byte{0x00, 0x02}
+		}
+		return sak, atqa, sizeInBytes, nil
+	}
+	if ok, size := m.tryNTAG(); ok {
+		sizeInBytes = size
+		if (size > 480 && size <= 504) || size == 888 {
+			sak = 0x00
+			atqa = []byte{0x00, 0x00}
+		} else if size == 144 {
+			sak = 0x44
+			atqa = []byte{0x00, 0x44}
+		}
+		return sak, atqa, sizeInBytes, nil
+	}
+	if m.tryUltralight() {
+		sak = 0x00
+		atqa = []byte{0x00, 0x44}
+		return sak, atqa, 0, nil
+	}
+	selectAll := []byte{0xFF, 0xCA, 0x00, 0x00, 0x00}
+	resp, err := m.card.Transmit(selectAll)
 	if err != nil {
-		return 0, nil
+		return sak, atqa, 0, fmt.Errorf("failed to transmit: %v", err)
+	}
+	if len(resp) < 4 || !bytes.Equal(resp[len(resp)-2:], []byte{0x90, 0x00}) {
+		return sak, atqa, 0, fmt.Errorf("invalid response length")
+	}
+	atqa, sak = resp[0:2], resp[2]
+	return sak, atqa, 0, nil
+}
+
+func (m *Reader) getCardType(atqa []byte, sak byte, sizeInBytes int) (string, error) {
+
+	type cardType struct {
+		ATQA    [2]byte
+		SAK     byte
+		Name    string
+		Details string
+	}
+	cardTypes := []cardType{
+		{[2]byte{0x00, 0x04}, 0x08, MIFARE_CLASSIK_1K, "1KB, CRYPTO1"},
+		{[2]byte{0x00, 0x02}, 0x18, MIFARE_CLASSIK_4K, "4KB, CRYPTO1"},
+		{[2]byte{0x00, 0x44}, 0x09, MIFARE_MINI, "320B, CRYPTO1"},
+		{[2]byte{0x00, 0x44}, 0x00, MIFARE_ULTRALIGHT, "Check CC for specifics"},
+		{[2]byte{0x00, 0x00}, 0x00, NTAG, "Check CC: 504B/888B"},
+		{[2]byte{0x03, 0x44}, 0x20, MIFARE_DESFIRE, "2-16KB, AES"},
+		{[2]byte{0x00, 0x04}, 0x0C, MIFARE_PLUS_SE_2K, "2KB, CRYPTO1/AES"},
+		{[2]byte{0x00, 0x02}, 0x1C, MIFARE_PLUS_SE_4K, "4KB, CRYPTO1/AES"},
+		{[2]byte{0x0C, 0x00}, 0x00, TOPAZ_JEWEL, "96-512B, no auth"},
+		{[2]byte{0x00, 0x43}, 0x11, FELI_CA, "Variable, FeliCa-specific"},
 	}
 
-	atr := status.Atr
-	if len(atr) >= 14 {
-		// SAK is often in historical bytes around position 13
-		sak = atr[13]
+	for _, ct := range cardTypes {
+		if bytes.Equal(atqa, ct.ATQA[:]) && sak == ct.SAK {
+			if ct.Name == NTAG {
+				ct.Details = fmt.Sprintf("%dB", sizeInBytes)
+			}
+			return fmt.Sprintf("%s (%s)", ct.Name, ct.Details), nil
+		}
+	}
+	return fmt.Sprintf("Unknown (ATQA=%s, SAK=%02x)", hex.EncodeToString(atqa), sak), nil
+}
+
+func (m *Reader) tryClassic() (bool, int) {
+
+	defaultKey := []byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
+	err := m.classicLoadKey(0x00, defaultKey)
+	if err != nil {
+		return false, 0
+	}
+	keyTypeA := byte(0x60)
+	err = m.classicAuthenticate(0x40, keyTypeA, 0x00)
+	if err == nil {
+		return true, 4096
+	}
+	err = m.classicAuthenticate(0x00, keyTypeA, 0x00)
+	if err == nil {
+		return true, 1024
+	}
+	return false, 0
+}
+
+func (m *Reader) classicLoadKey(keyNumber byte, key []byte) error {
+	if len(key) != 6 {
+		return fmt.Errorf("key must be 6 bytes")
 	}
 
-	// ATQA is typically 2 bytes, sometimes in ATR
-	if len(atr) >= 16 {
-		atqa = atr[14:16]
+	cmd := []byte{0xFF, 0x82, 0x00, keyNumber, 0x06}
+	cmd = append(cmd, key...)
+
+	rsp, err := m.card.Transmit(cmd)
+	if err != nil {
+		return fmt.Errorf("failed to load key: %v", err)
 	}
 
-	return sak, atqa
+	if len(rsp) != 2 || rsp[0] != 0x90 || rsp[1] != 0x00 {
+		return fmt.Errorf("key load failed: %v", rsp)
+	}
+
+	return nil
+}
+
+// Authenticate authenticates a block with the specified key
+func (m *Reader) classicAuthenticate(block byte, keyType byte, keyNumber byte) error {
+	cmd := []byte{0xFF, 0x86, 0x00, 0x00, 0x05, 0x01, 0x00, block, keyType, keyNumber}
+
+	rsp, err := m.card.Transmit(cmd)
+	if err != nil {
+		return fmt.Errorf("authentication failed: %v", err)
+	}
+
+	if len(rsp) != 2 || rsp[0] != 0x90 || rsp[1] != 0x00 {
+		return fmt.Errorf("authentication error: %v", rsp)
+	}
+
+	return nil
+}
+
+func (m *Reader) tryUltralight() bool {
+	CmdRead := byte(0x30)
+	cmd := []byte{CmdRead, 4}
+	response, err := m.card.Transmit(cmd)
+	if err != nil {
+		return false
+	}
+	if len(response) < 2 {
+		return false
+	}
+	return true
+}
+
+func (m *Reader) tryNTAG() (bool, int) {
+	page3, err := m.card.Transmit([]byte{0xFF, 0xB0, 0x00, 0x03, 0x04})
+	if err != nil {
+		return false, 0
+	}
+	if len(page3) < 4 {
+		return false, 0
+	}
+	if !bytes.Equal(page3[4:], []byte{0x90, 0x00}) {
+		return false, 0
+	}
+	cc := page3[:4]
+	switch {
+	case bytes.Equal(cc, []byte{0xE1, 0x10, 0x12, 0x00}):
+		return true, 144 // "NTAG213 (144 Bytes)"
+	case bytes.Equal(cc, []byte{0xE1, 0x10, 0x3F, 0x00}):
+		return true, 504 // "NTAG215 (504 Bytes)"
+	case bytes.Equal(cc, []byte{0xE1, 0x10, 0x6D, 0x00}):
+		return true, 888 // "NTAG216 (888 Bytes)"
+	case bytes.Equal(cc, []byte{0xE1, 0x10, 0x3E, 0x00}):
+		return true, 496 // "NTAG215 (496 Bytes)"
+	default:
+		return false, 0
+	}
 }

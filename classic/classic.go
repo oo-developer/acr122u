@@ -141,7 +141,6 @@ func (m *Classic) getVersion() []byte {
 	return nil
 }
 
-// LoadKey loads an authentication key into the hardware
 func (m *Classic) LoadKey(keyNumber byte, key []byte) error {
 	if len(key) != 6 {
 		return fmt.Errorf("key must be 6 bytes")
@@ -162,7 +161,6 @@ func (m *Classic) LoadKey(keyNumber byte, key []byte) error {
 	return nil
 }
 
-// Authenticate authenticates a block with the specified key
 func (m *Classic) Authenticate(block byte, keyType byte, keyNumber byte) error {
 	cmd := []byte{0xFF, 0x86, 0x00, 0x00, 0x05, 0x01, 0x00, block, keyType, keyNumber}
 
@@ -299,23 +297,22 @@ func GetSectorTrailerBlock(sector byte) byte {
 	return sector*4 + 3
 }
 
-func (m *Classic) TryStandardKeys(blockNum byte) string {
+func (m *Classic) TryStandardKeys(blockNum byte, keyType int) string {
 	for name, keys := range DefaultKeys {
 		fmt.Sprintf("     Probing %s\n", name)
-		keyA := keys.KeyA
-		keyB := keys.KeyB
-
-		m.LoadKey(0x00, keyA)
-		err := m.Authenticate(blockNum, KeyTypeA, 0x00)
+		key := keys.KeyA
+		if KeyTypeB == keyType {
+			key = keys.KeyB
+		}
+		err := m.LoadKey(0x00, key)
+		if err != nil {
+			return ""
+		}
+		err = m.Authenticate(blockNum, KeyTypeA, 0x00)
 		if err == nil {
 			return name
 		}
 
-		m.LoadKey(0x00, keyB)
-		err = m.Authenticate(blockNum, KeyTypeB, 0x00)
-		if err == nil {
-			return name
-		}
 	}
 	return ""
 }

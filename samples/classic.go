@@ -59,7 +59,7 @@ func main() {
 	}
 	fmt.Printf("[OK] Card UID: %s\n", hex.EncodeToString(uid))
 
-	cardType, err := reader.DetectCardType()
+	cardType, err := reader.ReadCardInfo()
 	if err != nil {
 		log.Printf("[ERROR] Failed to get card type: %v\n", err)
 		os.Exit(1)
