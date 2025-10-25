@@ -125,4 +125,12 @@ func main() {
 	fmt.Printf("[OK] Verified data: %s\n", hex.EncodeToString(verifyData))
 	fmt.Printf("[OK] Verified ASCII: %q\n", verifyData)
 
+	fmt.Println("[OK] Dumping card ... (64 blocks)")
+	for ii := 0; ii < 64; ii++ {
+		classicReader.Authenticate(byte(ii), classic.KeyTypeA, 0x00)
+		data, err := classicReader.ReadBlock(byte(ii))
+		if err == nil {
+			fmt.Printf("    [%02d] %s\n", ii, hex.EncodeToString(data))
+		}
+	}
 }
