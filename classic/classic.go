@@ -7,18 +7,6 @@ import (
 	"github.com/oo-developer/acr122u/hardware"
 )
 
-type CardInfo struct {
-	Type        string
-	UID         []byte
-	ATR         []byte // Answer to Reset
-	SAK         byte   // Select Acknowledge
-	ATQA        []byte // Answer to Request Type A
-	Capacity    int    // Storage capacity in bytes
-	BlockCount  int    // Number of blocks
-	SectorCount int    // Number of sectors
-	Protocol    string // Communication protocol
-}
-
 const (
 	KeyTypeA = 0x60
 	KeyTypeB = 0x61
@@ -81,46 +69,6 @@ func NewClassic(reader *hardware.Reader) *Classic {
 	}
 }
 
-// Connect connects to the first available hardware with a card
-func (m *Classic) Connect() error {
-	if m.reader == "" {
-		return fmt.Errorf("no hardware selected, use: UseReader(hardware string)")
-	}
-	card, err := m.ctx.Connect(m.reader, scard.ShareShared, scard.ProtocolT0|scard.ProtocolT1)
-	if err != nil {
-		return fmt.Errorf("failed to connect to hardware: %v", err)
-	}
-
-	m.card = card
-	return nil
-}
-
-// getCardAttributes retrieves SAK and ATQA using direct commands
-func (m *Classic) getCardAttributes() (sak byte, atqa []byte) {
-	// This is a simplified version - actual implementation may vary by hardware
-	// Some readers expose this in ATR, others need special commands
-
-	// Try to extract from ATR historical bytes if available
-	status, err := m.card.Status()
-	if err != nil {
-		return 0, nil
-	}
-
-	atr := status.Atr
-	if len(atr) >= 14 {
-		// SAK is often in historical bytes around position 13
-		sak = atr[13]
-	}
-
-	// ATQA is typically 2 bytes, sometimes in ATR
-	if len(atr) >= 16 {
-		atqa = atr[14:16]
-	}
-
-	return sak, atqa
-}
-
-// getVersion gets version information for Ultralight/NTAG cards
 func (m *Classic) getVersion() []byte {
 	// GET_VERSION command for NTAG/Ultralight EV1
 	cmd := []byte{0xFF, 0x00, 0x00, 0x00, 0x02, 0x60, 0x00}

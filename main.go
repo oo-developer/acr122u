@@ -50,21 +50,8 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("[OK] Connected!")
-
-	// Get UID
-	uid, err := reader.GetUID()
-	if err != nil {
-		log.Printf("[ERROR] Failed to get UID: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("[OK] Card UID: %s\n", hex.EncodeToString(uid))
-
-	cardType, err := reader.ReadCardInfo()
-	if err != nil {
-		log.Printf("[ERROR] Failed to get card type: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("[OK] Card type: %s\n", cardType.Type)
+	fmt.Printf("[OK] Card UID : %s\n", hex.EncodeToString(reader.CardInfo().UID))
+	fmt.Printf("[OK] Card type: %s\n", reader.CardInfo().Type)
 
 	classicReader := classic.NewClassic(reader)
 
@@ -99,9 +86,6 @@ func main() {
 	fmt.Printf("[OK] Block %d data: %s\n", blockNum, hex.EncodeToString(data))
 	fmt.Printf("[OK] Block %d ASCII: %q\n", blockNum, data)
 
-	// Example: Write to block 4
-	// WARNING: Be careful not to write to sector trailer blocks (every 4th block)
-	// as this contains access keys and conditions
 	newData := []byte("1c00901100b0020A") // Must be exactly 16 bytes
 	if len(newData) != 16 {
 		fmt.Println("Data must be 16 bytes")
@@ -115,7 +99,6 @@ func main() {
 	}
 	fmt.Println("[OK] Write successful!")
 
-	// Read back to verify
 	fmt.Printf("[OK] Reading block %d again to verify...\n", blockNum)
 	verifyData, err := classicReader.ReadBlock(blockNum)
 	if err != nil {

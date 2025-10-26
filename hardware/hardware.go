@@ -35,9 +35,15 @@ type CardInfo struct {
 }
 
 type Reader struct {
-	ctx    *scard.Context
-	card   *scard.Card
-	reader string
+	ctx      *scard.Context
+	card     *scard.Card
+	reader   string
+	cardInfo *CardInfo
+	block0   []byte
+	page0    []byte
+	page1    []byte
+	page2    []byte
+	page3    []byte
 }
 
 // NewReader initializes a new hardware
@@ -48,7 +54,8 @@ func NewReader() (*Reader, error) {
 	}
 
 	return &Reader{
-		ctx: ctx,
+		ctx:      ctx,
+		cardInfo: &CardInfo{},
 	}, nil
 }
 
@@ -115,47 +122,58 @@ func (m *Reader) Connect() error {
 	}
 
 	m.card = card
-	return nil
+	uid, err := m.getUID()
+	if err != nil {
+		return err
+	}
+	m.cardInfo.UID = uid
+	err = m.detectCardType()
+	return err
 }
 
-// GetUID retrieves the card UID
-func (m *Reader) GetUID() ([]byte, error) {
+func (m *Reader) CardInfo() *CardInfo {
+	return m.cardInfo
+}
+
+func (m *Reader) getUID() ([]byte, error) {
 	if m.card == nil {
 		return nil, fmt.Errorf("not connected to card")
 	}
-
-	// Send Get Data command for UID
 	cmd := []byte{0xFF, 0xCA, 0x00, 0x00, 0x00}
 	rsp, err := m.card.Transmit(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get UID: %v", err)
 	}
-
 	if len(rsp) < 2 {
 		return nil, fmt.Errorf("invalid response length")
 	}
-
-	// Check status bytes (should be 0x90 0x00 for success)
 	if rsp[len(rsp)-2] != 0x90 || rsp[len(rsp)-1] != 0x00 {
 		return nil, fmt.Errorf("error status: %02X %02X", rsp[len(rsp)-2], rsp[len(rsp)-1])
 	}
-
 	return rsp[:len(rsp)-2], nil
 }
 
-func (m *Reader) ReadCardInfo() (*CardInfo, error) {
-	if m.card == nil {
-		return nil, fmt.Errorf("not connected to card")
-	}
+func (m *Reader) detectCardType() error {
+
+	block0, _ := m.readBlock(0)
+	page0, _ := m.readPage(0)
+	page1, _ := m.readPage(1)
+	page2, _ := m.readPage(2)
+	page3, _ := m.readPage(3)
+	m.block0 = block0
+	m.page0 = page0
+	m.page1 = page1
+	m.page2 = page2
+	m.page3 = page3
 
 	sak, atqa, sizeInBytes, err := m.getCardAttributes()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	status, err := m.card.Status()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	protocol := "Unknown"
 	switch status.ActiveProtocol {
@@ -167,24 +185,31 @@ func (m *Reader) ReadCardInfo() (*CardInfo, error) {
 		protocol = "Unknown"
 	}
 	cardType, err := m.getCardType(atqa, sak, sizeInBytes)
-
-	uid, err := m.GetUID()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get UID: %v", err)
+		return err
 	}
-	info := &CardInfo{
-		UID:      uid,
-		Type:     cardType,
-		ATR:      status.Atr,
-		SAK:      sak,
-		ATQA:     atqa,
-		Protocol: protocol,
-		Capacity: sizeInBytes,
-	}
-	return info, nil
+
+	m.cardInfo.Type = cardType
+	m.cardInfo.ATR = status.Atr
+	m.cardInfo.SAK = sak
+	m.cardInfo.ATQA = atqa
+	m.cardInfo.Protocol = protocol
+	m.cardInfo.Capacity = sizeInBytes
+	return nil
 }
 
 func (m *Reader) getCardAttributes() (sak byte, atqa []byte, sizeInBytes int, err error) {
+	if ok, size := m.tryNTAG(m.page3); ok {
+		sizeInBytes = size
+		if (size > 480 && size <= 504) || size == 888 {
+			sak = 0x00
+			atqa = []byte{0x00, 0x00}
+		} else if size == 144 {
+			sak = 0x44
+			atqa = []byte{0x00, 0x44}
+		}
+		return sak, atqa, sizeInBytes, nil
+	}
 	if ok, size := m.tryClassic(); ok {
 		sizeInBytes = size
 		if size == 1024 {
@@ -193,17 +218,6 @@ func (m *Reader) getCardAttributes() (sak byte, atqa []byte, sizeInBytes int, er
 		} else {
 			sak = 0x18
 			atqa = []byte{0x00, 0x02}
-		}
-		return sak, atqa, sizeInBytes, nil
-	}
-	if ok, size := m.tryNTAG(); ok {
-		sizeInBytes = size
-		if (size > 480 && size <= 504) || size == 888 {
-			sak = 0x00
-			atqa = []byte{0x00, 0x00}
-		} else if size == 144 {
-			sak = 0x44
-			atqa = []byte{0x00, 0x44}
 		}
 		return sak, atqa, sizeInBytes, nil
 	}
@@ -266,10 +280,12 @@ func (m *Reader) tryClassic() (bool, int) {
 	keyTypeA := byte(0x60)
 	err = m.classicAuthenticate(0x40, keyTypeA, 0x00)
 	if err == nil {
+		m.block0, err = m.readBlock(0)
 		return true, 4096
 	}
 	err = m.classicAuthenticate(0x00, keyTypeA, 0x00)
 	if err == nil {
+		m.block0, err = m.readBlock(0)
 		return true, 1024
 	}
 	return false, 0
@@ -324,15 +340,8 @@ func (m *Reader) tryUltralight() bool {
 	return true
 }
 
-func (m *Reader) tryNTAG() (bool, int) {
-	page3, err := m.card.Transmit([]byte{0xFF, 0xB0, 0x00, 0x03, 0x04})
-	if err != nil {
-		return false, 0
-	}
-	if len(page3) < 4 {
-		return false, 0
-	}
-	if !bytes.Equal(page3[4:], []byte{0x90, 0x00}) {
+func (m *Reader) tryNTAG(page3 []byte) (bool, int) {
+	if page3 == nil {
 		return false, 0
 	}
 	cc := page3[:4]
@@ -348,4 +357,34 @@ func (m *Reader) tryNTAG() (bool, int) {
 	default:
 		return false, 0
 	}
+}
+
+func (m *Reader) readPage(page byte) ([]byte, error) {
+	cmd := []byte{0xFF, 0xB0, 0x00, page, 0x04}
+	rsp, err := m.card.Transmit(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("read failed: %v", err)
+	}
+	if len(rsp) < 2 {
+		return nil, fmt.Errorf("invalid response length")
+	}
+	if rsp[len(rsp)-2] != 0x90 || rsp[len(rsp)-1] != 0x00 {
+		return nil, fmt.Errorf("read error: %02X %02X", rsp[len(rsp)-2], rsp[len(rsp)-1])
+	}
+	return rsp[:4], nil
+}
+
+func (m *Reader) readBlock(block byte) ([]byte, error) {
+	cmd := []byte{0xFF, 0xB0, 0x00, block, 0x10}
+	rsp, err := m.card.Transmit(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("read failed: %v", err)
+	}
+	if len(rsp) < 2 {
+		return nil, fmt.Errorf("invalid response length")
+	}
+	if rsp[len(rsp)-2] != 0x90 || rsp[len(rsp)-1] != 0x00 {
+		return nil, fmt.Errorf("read error: %02X %02X", rsp[len(rsp)-2], rsp[len(rsp)-1])
+	}
+	return rsp[:len(rsp)-2], nil
 }
