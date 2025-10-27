@@ -15,7 +15,7 @@ const (
 	MIFARE_MINI       = "MIFARE Mini"
 	MIFARE_ULTRALIGHT = "MIFARE Ultralight/NTAG203/213"
 	NTAG              = "NTAG215/216"
-	MIFARE_DESFIRE    = "MIFARE DESFire EV1/EV2/EV3"
+	MIFARE_DESFIRE    = "DESFire EV1/EV2/EV3"
 	MIFARE_PLUS_SE_2K = "MIFARE Plus SE 2K"
 	MIFARE_PLUS_SE_4K = "MIFARE Plus SE 4K"
 	TOPAZ_JEWEL       = "Topaz/Jewel"
@@ -155,20 +155,27 @@ func (m *Reader) getUID() ([]byte, error) {
 
 func (m *Reader) detectCardType() error {
 
-	block0, _ := m.readBlock(0)
-	page0, _ := m.readPage(0)
-	page1, _ := m.readPage(1)
-	page2, _ := m.readPage(2)
-	page3, _ := m.readPage(3)
-	m.block0 = block0
-	m.page0 = page0
-	m.page1 = page1
-	m.page2 = page2
-	m.page3 = page3
-
+	_, isDESFire := m.tryDESFireVersion()
+	if !isDESFire {
+		block0, _ := m.readBlock(0)
+		page0, _ := m.readPage(0)
+		page1, _ := m.readPage(1)
+		page2, _ := m.readPage(2)
+		page3, _ := m.readPage(3)
+		m.block0 = block0
+		m.page0 = page0
+		m.page1 = page1
+		m.page2 = page2
+		m.page3 = page3
+	}
 	sak, atqa, sizeInBytes, err := m.getCardAttributes()
 	if err != nil {
 		return err
+	}
+	if isDESFire {
+		sak = 0x20
+		atqa[0] = 0x03
+		atqa[1] = 0x44
 	}
 
 	status, err := m.card.Status()
@@ -184,7 +191,7 @@ func (m *Reader) detectCardType() error {
 	default:
 		protocol = "Unknown"
 	}
-	cardType, err := m.getCardType(atqa, sak, sizeInBytes)
+	cardType, sizeInBytes, err := m.getCardType(atqa, sak, sizeInBytes)
 	if err != nil {
 		return err
 	}
@@ -238,7 +245,7 @@ func (m *Reader) getCardAttributes() (sak byte, atqa []byte, sizeInBytes int, er
 	return sak, atqa, 0, nil
 }
 
-func (m *Reader) getCardType(atqa []byte, sak byte, sizeInBytes int) (string, error) {
+func (m *Reader) getCardType(atqa []byte, sak byte, sizeInBytes int) (string, int, error) {
 
 	type cardType struct {
 		ATQA    [2]byte
@@ -264,10 +271,17 @@ func (m *Reader) getCardType(atqa []byte, sak byte, sizeInBytes int) (string, er
 			if ct.Name == NTAG {
 				ct.Details = fmt.Sprintf("%dB", sizeInBytes)
 			}
-			return fmt.Sprintf("%s (%s)", ct.Name, ct.Details), nil
+			if ct.Name == MIFARE_DESFIRE {
+				if name, size, ok := m.getDESFireInfo(); ok {
+					ct.Details = fmt.Sprintf("%dB", size)
+					ct.Name = name
+					sizeInBytes = size
+				}
+			}
+			return fmt.Sprintf("%s (%s)", ct.Name, ct.Details), sizeInBytes, nil
 		}
 	}
-	return fmt.Sprintf("Unknown (ATQA=%s, SAK=%02x)", hex.EncodeToString(atqa), sak), nil
+	return fmt.Sprintf("Unknown (ATQA=%s, SAK=%02x)", hex.EncodeToString(atqa), sak), 0, nil
 }
 
 func (m *Reader) tryClassic() (bool, int) {
@@ -387,4 +401,74 @@ func (m *Reader) readBlock(block byte) ([]byte, error) {
 		return nil, fmt.Errorf("read error: %02X %02X", rsp[len(rsp)-2], rsp[len(rsp)-1])
 	}
 	return rsp[:len(rsp)-2], nil
+}
+
+func (m *Reader) tryDESFireVersion() ([]byte, bool) {
+	cmd := []byte{0x90, 0x60, 0x00, 0x00, 0x00}
+	rsp, err := m.card.Transmit(cmd)
+	if err != nil {
+		return nil, false
+	}
+	if len(rsp) <= 2 {
+		return nil, false
+	}
+	if len(rsp) > 0 && rsp[len(rsp)-1] == 0xAF {
+		// 0xAF = additional frame follows
+		return rsp, true
+	}
+	return rsp, true
+}
+
+func (m *Reader) getDESFireInfo() (string, int, bool) {
+	cmd := []byte{0x90, 0x60, 0x00, 0x00, 0x00}
+	rsp, err := m.card.Transmit(cmd)
+	if err != nil {
+		return "", 0, false
+	}
+	if len(rsp) <= 2 {
+		return "", 0, false
+	}
+	hwMajor := rsp[3]
+	if len(rsp) > 0 && rsp[len(rsp)-1] == 0xAF {
+		cmd := []byte{0x90, 0xAF, 0x00, 0x00, 0x00}
+		rsp, err := m.card.Transmit(cmd)
+		if err != nil {
+			return "", 0, false
+		}
+		size := rsp[5]
+		name := "DESFire [Version unknown]"
+		switch rsp[3] {
+		case 0x01:
+			name = "DESFire V1"
+		case 0x03:
+			if hwMajor == 0x33 {
+				name = "DESFire V3"
+			} else {
+				name = "DESFire V2"
+			}
+		case 0x12:
+			name = "DESFire V2"
+		case 0x22:
+			name = "DESFire V2"
+		case 0x33:
+			name = "DESFire V3"
+		}
+
+		return name, m.getDESFireStorageSize(size), true
+	}
+	return "", 0, true
+}
+
+func (m *Reader) getDESFireStorageSize(byteInfo byte) int {
+	// Storage size encoding: 0x16 = 2KB, 0x18 = 4KB, 0x1A = 8KB
+	switch byteInfo {
+	case 0x16:
+		return 2048
+	case 0x18:
+		return 4096
+	case 0x1A:
+		return 8192
+	default:
+		return 0
+	}
 }
