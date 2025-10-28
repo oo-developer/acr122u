@@ -98,6 +98,11 @@ func (m *Reader) WaitForCard() error {
 	return nil
 }
 
+func (m *Reader) Disconnect() {
+	m.card.Disconnect(scard.LeaveCard)
+	time.Sleep(3 * time.Second)
+}
+
 // ListReaders returns available PC/SC readers
 func (m *Reader) ListReaders() ([]string, error) {
 	readers, err := m.ctx.ListReaders()

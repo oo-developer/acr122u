@@ -7,7 +7,6 @@ import (
 	"os"
 
 	"github.com/oo-developer/acr122u/hardware"
-	"github.com/oo-developer/acr122u/samples"
 )
 
 func main() {
@@ -35,24 +34,26 @@ func main() {
 	}
 	reader.UseReader(readers[0])
 
-	fmt.Println("[OK] Waiting for card ...")
-	err = reader.WaitForCard()
-	if err != nil {
-		fmt.Printf("[ERROR] Failed to wait for card: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("[OK] Card ready")
+	for {
+		fmt.Println("[OK] Waiting for card ...")
+		err = reader.WaitForCard()
+		if err != nil {
+			fmt.Printf("[ERROR] Failed to wait for card: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("[OK] Card ready")
 
-	// Connect to card
-	fmt.Println("[OK] Connecting to card...")
-	if err := reader.Connect(); err != nil {
-		log.Printf("[ERROR] Failed to connect: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Println("[OK] Connected!")
-	fmt.Printf("[OK] Card UID : %s\n", hex.EncodeToString(reader.CardInfo().UID))
-	fmt.Printf("[OK] Card type: %s\n", reader.CardInfo().Type)
+		// Connect to card
+		fmt.Println("[OK] Connecting to card...")
+		if err := reader.Connect(); err != nil {
+			reader.Disconnect()
+		}
+		fmt.Println("[OK] Connected!")
+		fmt.Printf("[OK] Card UID : %s\n", hex.EncodeToString(reader.CardInfo().UID))
+		fmt.Printf("[OK] Card type: %s\n", reader.CardInfo().Type)
 
+		reader.Disconnect()
+	}
 	//samples.NtagSample(reader)
-	samples.ClassicSample(reader)
+	//samples.ClassicSample(reader)
 }
