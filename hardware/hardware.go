@@ -35,15 +35,16 @@ type CardInfo struct {
 }
 
 type Reader struct {
-	ctx      *scard.Context
-	card     *scard.Card
-	reader   string
-	cardInfo *CardInfo
-	block0   []byte
-	page0    []byte
-	page1    []byte
-	page2    []byte
-	page3    []byte
+	ctx       *scard.Context
+	card      *scard.Card
+	reader    string
+	stateFlag scard.StateFlag
+	cardInfo  *CardInfo
+	block0    []byte
+	page0     []byte
+	page1     []byte
+	page2     []byte
+	page3     []byte
 }
 
 // NewReader initializes a new hardware
@@ -53,10 +54,12 @@ func NewReader() (*Reader, error) {
 		return nil, fmt.Errorf("failed to establish context: %v", err)
 	}
 
-	return &Reader{
-		ctx:      ctx,
-		cardInfo: &CardInfo{},
-	}, nil
+	r := &Reader{
+		ctx:       ctx,
+		stateFlag: scard.StateUnaware,
+		cardInfo:  &CardInfo{},
+	}
+	return r, nil
 }
 
 func (m *Reader) Ctx() *scard.Context {
@@ -84,14 +87,15 @@ func (m *Reader) Close() error {
 
 func (m *Reader) WaitForCard() error {
 	states := []scard.ReaderState{
-		{Reader: m.reader, CurrentState: scard.StateUnaware},
+		{Reader: m.reader, CurrentState: m.stateFlag},
 	}
 	for {
-		err := m.ctx.GetStatusChange(states, 30*time.Second)
+		err := m.ctx.GetStatusChange(states, 876000*time.Hour)
 		if err != nil {
 			return err
 		}
 		if states[0].EventState&scard.StatePresent != 0 {
+			m.stateFlag = states[0].EventState
 			break
 		}
 	}
@@ -100,7 +104,6 @@ func (m *Reader) WaitForCard() error {
 
 func (m *Reader) Disconnect() {
 	m.card.Disconnect(scard.LeaveCard)
-	time.Sleep(3 * time.Second)
 }
 
 // ListReaders returns available PC/SC readers
